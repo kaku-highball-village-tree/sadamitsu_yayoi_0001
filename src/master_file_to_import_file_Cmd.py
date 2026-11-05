@@ -7,6 +7,9 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
+from openpyxl import Workbook
+from openpyxl.utils.exceptions import IllegalCharacterError
+
 
 PARENTHESIS_TRANSLATION_TABLE = str.maketrans("（）", "()")
 PRICE_MASTER_STEP0001_PREFIX = "step0001_得意先別商品売上単価マスタ"
@@ -288,23 +291,70 @@ def find_step0001_master_paths(
 
 def create_step0002_tsv_if_ready(
     pszStep0001Path: str,
-) -> Tuple[Optional[str], Optional[str], List[str]]:
+) -> Tuple[Optional[str], Optional[str], Optional[str], List[str]]:
     arrMasterPaths = find_step0001_master_paths(pszStep0001Path)
     if arrMasterPaths is None:
-        return None, None, []
+        return None, None, None, []
     pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath = arrMasterPaths
     arrMissingPaths = [pszPath for pszPath in arrMasterPaths if not os.path.isfile(pszPath)]
     if arrMissingPaths:
-        return None, None, arrMissingPaths
-    return (
-        create_step0002_tsv(
-            pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath
-        ),
-        create_step0002_name_inserted_tsv(
-            pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath
-        ),
-        [],
+        return None, None, None, arrMissingPaths
+    pszStep0002Path = create_step0002_tsv(
+        pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath
     )
+    pszStep0002NameInsertedPath = create_step0002_name_inserted_tsv(
+        pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath
+    )
+    pszExcelPath = create_step0002_excel_file(
+        pszStep0002Path, pszStep0002NameInsertedPath
+    )
+    return pszStep0002Path, pszStep0002NameInsertedPath, pszExcelPath, []
+
+
+def create_step0002_excel_file(
+    pszStep0002Path: str, pszStep0002NameInsertedPath: str
+) -> str:
+    """2つのstep0002 TSVを指定シート名のExcelブックにまとめます。"""
+    pszDirectory, pszFileName = os.path.split(pszStep0002Path)
+    if not pszFileName.startswith("step0002_"):
+        raise ConversionError("step0002 TSVのファイル名が不正です: " + pszFileName)
+    pszExcelPath = os.path.join(
+        pszDirectory, os.path.splitext(pszFileName[len("step0002_") :])[0] + ".xlsx"
+    )
+
+    try:
+        objWorkbook = Workbook()
+        for iIndex, (pszTsvPath, pszSheetName) in enumerate(
+            (
+                (pszStep0002Path, "カナあり"),
+                (pszStep0002NameInsertedPath, "カナなし"),
+            )
+        ):
+            objSheet = (
+                objWorkbook.active if iIndex == 0 else objWorkbook.create_sheet()
+            )
+            objSheet.title = pszSheetName
+            with open(pszTsvPath, "r", encoding="utf-8", newline="") as objInput:
+                for iRow, arrValues in enumerate(
+                    csv.reader(objInput, delimiter="\t"), start=1
+                ):
+                    for iColumn, pszValue in enumerate(arrValues, start=1):
+                        objCell = objSheet.cell(iRow, iColumn, pszValue)
+                        objCell.data_type = "s"
+                        objCell.number_format = "@"
+        objWorkbook.save(pszExcelPath)
+    except (
+        OSError,
+        UnicodeError,
+        csv.Error,
+        ValueError,
+        IllegalCharacterError,
+    ) as objException:
+        raise ConversionError(
+            "step0002 TSVの読み込みまたはExcelファイルの作成に失敗しました: "
+            + str(objException)
+        ) from objException
+    return pszExcelPath
 
 
 def main() -> int:
@@ -317,7 +367,12 @@ def main() -> int:
     try:
         pszOutputPath = convert_csv_to_tsv(objArgs.input_csv_path)
         pszStep0001Path = create_step0001_tsv(pszOutputPath)
-        pszStep0002Path, pszStep0002NameInsertedPath, arrMissingPaths = create_step0002_tsv_if_ready(
+        (
+            pszStep0002Path,
+            pszStep0002NameInsertedPath,
+            pszExcelPath,
+            arrMissingPaths,
+        ) = create_step0002_tsv_if_ready(
             pszStep0001Path
         )
     except ConversionError as objException:
@@ -330,6 +385,8 @@ def main() -> int:
         print("step0002 TSVを作成しました: " + pszStep0002Path)
     if pszStep0002NameInsertedPath:
         print("名挿入step0002 TSVを作成しました: " + pszStep0002NameInsertedPath)
+    if pszExcelPath:
+        print("Excelファイルを作成しました: " + pszExcelPath)
     elif arrMissingPaths:
         print("step0002 TSVは未作成です。不足ファイル:")
         for pszMissingPath in arrMissingPaths:
