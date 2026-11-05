@@ -10,6 +10,7 @@ import win32con
 import win32gui
 
 WINDOW_TITLE = "商品マスタ CSV to TSV (Drag & Drop)"
+PARENTHESIS_TRANSLATION_TABLE = str.maketrans("（）", "()")
 
 
 class ConversionError(Exception):
@@ -50,6 +51,38 @@ def convert_dropped_csv_to_tsv(pszInputPath: str) -> str:
     except (OSError, UnicodeError, csv.Error) as objException:
         raise ConversionError(
             "CSVの読み込みまたはTSVの書き込みに失敗しました: "
+            + str(objException)
+        ) from objException
+
+    return pszOutputPath
+
+
+def create_step0001_tsv(pszInputTsvPath: str) -> str:
+    """TSV内の全角括弧と空白を置換・除去したstep0001ファイルを作成します。"""
+    pszInputTsvPath = os.path.abspath(pszInputTsvPath)
+    pszOutputPath = os.path.splitext(pszInputTsvPath)[0] + "_step0001.tsv"
+
+    try:
+        with open(pszInputTsvPath, "r", encoding="utf-8", newline="") as objInput:
+            objReader = csv.reader(objInput, delimiter="\t")
+            with open(pszOutputPath, "w", encoding="utf-8", newline="") as objOutput:
+                objWriter = csv.writer(
+                    objOutput,
+                    delimiter="\t",
+                    lineterminator="\r\n",
+                    quoting=csv.QUOTE_MINIMAL,
+                )
+                for arrRow in objReader:
+                    arrNormalizedRow = [
+                        pszValue.translate(PARENTHESIS_TRANSLATION_TABLE)
+                        .replace(" ", "")
+                        .replace("　", "")
+                        for pszValue in arrRow
+                    ]
+                    objWriter.writerow(arrNormalizedRow)
+    except (OSError, UnicodeError, csv.Error) as objException:
+        raise ConversionError(
+            "TSVの読み込みまたはstep0001 TSVの書き込みに失敗しました: "
             + str(objException)
         ) from objException
 
@@ -108,10 +141,16 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
 
         try:
             pszOutputPath = convert_dropped_csv_to_tsv(arrInputPaths[0])
+            pszStep0001Path = create_step0001_tsv(pszOutputPath)
         except ConversionError as objException:
             show_message(str(objException), True)
         else:
-            show_message("TSVを作成しました:\n" + pszOutputPath)
+            show_message(
+                "TSVを作成しました:\n"
+                + pszOutputPath
+                + "\n\nstep0001 TSVを作成しました:\n"
+                + pszStep0001Path
+            )
         return 0
     if iMessage == win32con.WM_PAINT:
         draw_instruction_text(iWindowHandle)

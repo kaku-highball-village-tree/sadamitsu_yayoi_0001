@@ -8,6 +8,7 @@ import sys
 
 
 PRODUCT_MASTER_NAME = "商品マスタ"
+PARENTHESIS_TRANSLATION_TABLE = str.maketrans("（）", "()")
 
 
 class ConversionError(Exception):
@@ -56,6 +57,38 @@ def convert_csv_to_tsv(pszInputPath: str) -> str:
     return pszOutputPath
 
 
+def create_step0001_tsv(pszInputTsvPath: str) -> str:
+    """TSV内の全角括弧と空白を置換・除去したstep0001ファイルを作成します。"""
+    pszInputTsvPath = os.path.abspath(pszInputTsvPath)
+    pszOutputPath = os.path.splitext(pszInputTsvPath)[0] + "_step0001.tsv"
+
+    try:
+        with open(pszInputTsvPath, "r", encoding="utf-8", newline="") as objInput:
+            objReader = csv.reader(objInput, delimiter="\t")
+            with open(pszOutputPath, "w", encoding="utf-8", newline="") as objOutput:
+                objWriter = csv.writer(
+                    objOutput,
+                    delimiter="\t",
+                    lineterminator="\r\n",
+                    quoting=csv.QUOTE_MINIMAL,
+                )
+                for arrRow in objReader:
+                    arrNormalizedRow = [
+                        pszValue.translate(PARENTHESIS_TRANSLATION_TABLE)
+                        .replace(" ", "")
+                        .replace("　", "")
+                        for pszValue in arrRow
+                    ]
+                    objWriter.writerow(arrNormalizedRow)
+    except (OSError, UnicodeError, csv.Error) as objException:
+        raise ConversionError(
+            "TSVの読み込みまたはstep0001 TSVの書き込みに失敗しました: "
+            + str(objException)
+        ) from objException
+
+    return pszOutputPath
+
+
 def main() -> int:
     objParser = argparse.ArgumentParser(
         description="商品マスタCSVをBOMなしUTF-8のTSVへ変換します。"
@@ -65,11 +98,13 @@ def main() -> int:
 
     try:
         pszOutputPath = convert_csv_to_tsv(objArgs.input_csv_path)
+        pszStep0001Path = create_step0001_tsv(pszOutputPath)
     except ConversionError as objException:
         print("エラー: " + str(objException), file=sys.stderr)
         return 1
 
     print("TSVを作成しました: " + pszOutputPath)
+    print("step0001 TSVを作成しました: " + pszStep0001Path)
     return 0
 
 
