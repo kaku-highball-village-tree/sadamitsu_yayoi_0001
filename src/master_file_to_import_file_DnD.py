@@ -138,10 +138,11 @@ def read_master_lookup(
     return objLookup
 
 
-def create_step0002_tsv(
+def _create_step0002_tsv(
     pszPriceTsvPath: str,
     pszCustomerTsvPath: str,
     pszProductTsvPath: str,
+    bNameInsertedOnly: bool,
 ) -> str:
     """得意先・商品名をコード照合で追加したstep0002 TSVを作成します。"""
     pszPriceTsvPath = os.path.abspath(pszPriceTsvPath)
@@ -150,6 +151,14 @@ def create_step0002_tsv(
     pszDirectory, pszFileName = os.path.split(pszPriceTsvPath)
     if pszFileName.startswith("step0001_"):
         pszFileName = pszFileName[len("step0001_") :]
+    if bNameInsertedOnly:
+        pszPriceMasterPrefix = "得意先別商品売上単価マスタ"
+        if pszFileName.startswith(pszPriceMasterPrefix):
+            pszFileName = (
+                pszPriceMasterPrefix
+                + "_名挿入"
+                + pszFileName[len(pszPriceMasterPrefix) :]
+            )
     pszOutputPath = os.path.join(pszDirectory, "step0002_" + pszFileName)
 
     try:
@@ -175,14 +184,22 @@ def create_step0002_tsv(
                 arrHeader, ["商品コード", "商品コ－ド"], pszPriceTsvPath
             )
             arrOutputHeader: List[str] = []
+            arrCustomerNameHeaders = (
+                ["得意先名(漢字１)"]
+                if bNameInsertedOnly
+                else ["得意先名(漢字１)", "得意先名(漢字２)", "得意先名(カナ)"]
+            )
+            arrProductNameHeaders = (
+                ["商品名(漢字)"]
+                if bNameInsertedOnly
+                else ["商品名(漢字)", "商品名(カナ)"]
+            )
             for iIndex, pszValue in enumerate(arrHeader):
                 arrOutputHeader.append(pszValue)
                 if iIndex == iCustomerCodeIndex:
-                    arrOutputHeader.extend(
-                        ["得意先名(漢字１)", "得意先名(漢字２)", "得意先名(カナ)"]
-                    )
+                    arrOutputHeader.extend(arrCustomerNameHeaders)
                 if iIndex == iProductCodeIndex:
-                    arrOutputHeader.extend(["商品名(漢字)", "商品名(カナ)"])
+                    arrOutputHeader.extend(arrProductNameHeaders)
 
             with open(pszOutputPath, "w", encoding="utf-8", newline="") as objOutput:
                 objWriter = csv.writer(
@@ -203,14 +220,18 @@ def create_step0002_tsv(
                     for iIndex, pszValue in enumerate(arrPaddedRow):
                         arrOutputRow.append(pszValue)
                         if iIndex == iCustomerCodeIndex:
+                            arrCustomerNames = objCustomerLookup.get(
+                                pszCustomerCode, ("", "", "")
+                            )
                             arrOutputRow.extend(
-                                objCustomerLookup.get(
-                                    pszCustomerCode, ("", "", "")
-                                )
+                                arrCustomerNames[: len(arrCustomerNameHeaders)]
                             )
                         if iIndex == iProductCodeIndex:
+                            arrProductNames = objProductLookup.get(
+                                pszProductCode, ("", "")
+                            )
                             arrOutputRow.extend(
-                                objProductLookup.get(pszProductCode, ("", ""))
+                                arrProductNames[: len(arrProductNameHeaders)]
                             )
                     objWriter.writerow(arrOutputRow)
     except ConversionError:
@@ -222,6 +243,28 @@ def create_step0002_tsv(
         ) from objException
 
     return pszOutputPath
+
+
+def create_step0002_tsv(
+    pszPriceTsvPath: str,
+    pszCustomerTsvPath: str,
+    pszProductTsvPath: str,
+) -> str:
+    """得意先名3列・商品名2列を追加したstep0002 TSVを作成します。"""
+    return _create_step0002_tsv(
+        pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath, False
+    )
+
+
+def create_step0002_name_inserted_tsv(
+    pszPriceTsvPath: str,
+    pszCustomerTsvPath: str,
+    pszProductTsvPath: str,
+) -> str:
+    """得意先名1列・商品名1列を追加した名挿入step0002 TSVを作成します。"""
+    return _create_step0002_tsv(
+        pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath, True
+    )
 
 
 def find_step0001_master_paths(
@@ -247,16 +290,19 @@ def find_step0001_master_paths(
 
 def create_step0002_tsv_if_ready(
     pszStep0001Path: str,
-) -> Tuple[Optional[str], List[str]]:
+) -> Tuple[Optional[str], Optional[str], List[str]]:
     arrMasterPaths = find_step0001_master_paths(pszStep0001Path)
     if arrMasterPaths is None:
-        return None, []
+        return None, None, []
     pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath = arrMasterPaths
     arrMissingPaths = [pszPath for pszPath in arrMasterPaths if not os.path.isfile(pszPath)]
     if arrMissingPaths:
-        return None, arrMissingPaths
+        return None, None, arrMissingPaths
     return (
         create_step0002_tsv(
+            pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath
+        ),
+        create_step0002_name_inserted_tsv(
             pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath
         ),
         [],
@@ -278,7 +324,7 @@ def draw_instruction_text(iWindowHandle: int) -> None:
             "CP932のCSVを、同じフォルダーにBOMなしUTF-8のTSVとして作成します。\n"
             "同名のTSVがある場合は上書きします。\n\n"
             "得意先別商品売上単価・得意先・商品マスタのstep0001 TSVが揃うと、"
-            "step0002 TSVも作成します。\n\n"
+            "通常版と名挿入版のstep0002 TSVも作成します。\n\n"
             "複数ファイルをまとめて処理できます。"
         )
         win32gui.DrawText(
@@ -351,7 +397,11 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                 continue
             arrCheckedPricePaths.add(pszPriceTsvPath)
             try:
-                pszStep0002Path, arrMissingPaths = create_step0002_tsv_if_ready(
+                (
+                    pszStep0002Path,
+                    pszStep0002NameInsertedPath,
+                    arrMissingPaths,
+                ) = create_step0002_tsv_if_ready(
                     pszStep0001Path
                 )
             except ConversionError as objException:
@@ -366,6 +416,11 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                 if pszStep0002Path:
                     arrStep0002Lines.append(
                         "step0002作成: " + os.path.basename(pszStep0002Path)
+                    )
+                if pszStep0002NameInsertedPath:
+                    arrStep0002Lines.append(
+                        "名挿入step0002作成: "
+                        + os.path.basename(pszStep0002NameInsertedPath)
                     )
                 elif arrMissingPaths:
                     arrStep0002Lines.append(
