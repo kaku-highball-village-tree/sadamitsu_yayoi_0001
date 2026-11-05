@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """商品マスタCSVをTSVへ変換するWindowsドラッグ＆ドロップ版です。"""
 
+import csv
 import os
 from typing import List
 
@@ -8,13 +9,61 @@ import win32api
 import win32con
 import win32gui
 
-if __package__:
-    from .master_file_to_import_file_Cmd import ConversionError, convert_csv_to_tsv
-else:
-    from master_file_to_import_file_Cmd import ConversionError, convert_csv_to_tsv
-
-
 WINDOW_TITLE = "商品マスタ CSV to TSV (Drag & Drop)"
+EXPECTED_COLUMN_COUNT = 43
+
+
+class ConversionError(Exception):
+    """CSVをTSVへ変換できない場合の例外です。"""
+
+
+def validate_csv_path(pszInputPath: str) -> str:
+    pszInputPath = os.path.abspath(pszInputPath)
+    if not os.path.isfile(pszInputPath):
+        raise ConversionError("入力ファイルが見つかりません: " + pszInputPath)
+    if os.path.splitext(pszInputPath)[1].lower() != ".csv":
+        raise ConversionError("CSVファイルをドラッグ＆ドロップしてください。")
+    return pszInputPath
+
+
+def create_output_path(pszInputPath: str) -> str:
+    pszBasePath, _ = os.path.splitext(pszInputPath)
+    return pszBasePath + ".tsv"
+
+
+def convert_dropped_csv_to_tsv(pszInputPath: str) -> str:
+    """CP932の43列CSVをBOMなしUTF-8のTSVへ変換します。"""
+    pszInputPath = validate_csv_path(pszInputPath)
+    pszOutputPath = create_output_path(pszInputPath)
+
+    try:
+        with open(pszInputPath, "r", encoding="cp932", newline="") as objInput:
+            objReader = csv.reader(objInput)
+            with open(pszOutputPath, "w", encoding="utf-8", newline="") as objOutput:
+                objWriter = csv.writer(
+                    objOutput,
+                    delimiter="\t",
+                    lineterminator="\r\n",
+                    quoting=csv.QUOTE_MINIMAL,
+                )
+                iRowCount = 0
+                for iLineNumber, arrRow in enumerate(objReader, start=1):
+                    if len(arrRow) != EXPECTED_COLUMN_COUNT:
+                        raise ConversionError(
+                            f"{iLineNumber}行目の項目数が"
+                            f"{EXPECTED_COLUMN_COUNT}項目ではありません: {len(arrRow)}項目"
+                        )
+                    objWriter.writerow(arrRow)
+                    iRowCount += 1
+                if iRowCount == 0:
+                    raise ConversionError("CSVにデータがありません。")
+    except (OSError, UnicodeError, csv.Error) as objException:
+        raise ConversionError(
+            "CSVの読み込みまたはTSVの書き込みに失敗しました: "
+            + str(objException)
+        ) from objException
+
+    return pszOutputPath
 
 
 def show_message(pszMessage: str, bIsError: bool = False) -> None:
@@ -28,8 +77,7 @@ def draw_instruction_text(iWindowHandle: int) -> None:
     try:
         objClientRect = win32gui.GetClientRect(iWindowHandle)
         pszText = (
-            "商品マスタのCSVファイルをここにドラッグ＆ドロップしてください。\n\n"
-            "ファイル名に「商品マスタ」を含むCSVを対象にします。\n"
+            "CSVファイルをここにドラッグ＆ドロップしてください。\n\n"
             "CP932のCSVを、同じフォルダーにBOMなしUTF-8のTSVとして作成します。\n"
             "同名のTSVがある場合は上書きします。\n\n"
             "一度に1ファイルを処理します。"
@@ -39,7 +87,7 @@ def draw_instruction_text(iWindowHandle: int) -> None:
             pszText,
             -1,
             objClientRect,
-            win32con.DT_CENTER | win32con.DT_VCENTER | win32con.DT_WORDBREAK,
+            win32con.DT_LEFT | win32con.DT_VCENTER | win32con.DT_WORDBREAK,
         )
     finally:
         win32gui.EndPaint(iWindowHandle, objPaint)
@@ -69,7 +117,7 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
             return 0
 
         try:
-            pszOutputPath = convert_csv_to_tsv(arrInputPaths[0])
+            pszOutputPath = convert_dropped_csv_to_tsv(arrInputPaths[0])
         except ConversionError as objException:
             show_message(str(objException), True)
         else:
