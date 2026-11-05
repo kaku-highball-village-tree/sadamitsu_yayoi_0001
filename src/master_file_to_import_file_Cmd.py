@@ -60,7 +60,8 @@ def convert_csv_to_tsv(pszInputPath: str) -> str:
 def create_step0001_tsv(pszInputTsvPath: str) -> str:
     """TSV内の全角括弧と空白を置換・除去したstep0001ファイルを作成します。"""
     pszInputTsvPath = os.path.abspath(pszInputTsvPath)
-    pszOutputPath = os.path.splitext(pszInputTsvPath)[0] + "_step0001.tsv"
+    pszDirectory, pszFileName = os.path.split(pszInputTsvPath)
+    pszOutputPath = os.path.join(pszDirectory, "step0001_" + pszFileName)
 
     try:
         with open(pszInputTsvPath, "r", encoding="utf-8", newline="") as objInput:
