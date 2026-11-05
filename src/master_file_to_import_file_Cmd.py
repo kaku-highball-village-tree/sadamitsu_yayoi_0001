@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
-"""商品マスタCSVを取込用TSVへ変換するコマンドライン版です。"""
+"""CSVを取込用TSVへ変換するコマンドライン版です。"""
 
 import argparse
 import csv
 import os
 import sys
+from typing import Dict, List, Optional, Tuple
 
 
-PRODUCT_MASTER_NAME = "商品マスタ"
 PARENTHESIS_TRANSLATION_TABLE = str.maketrans("（）", "()")
+PRICE_MASTER_STEP0001_PREFIX = "step0001_得意先別商品売上単価マスタ"
+CUSTOMER_MASTER_STEP0001_PREFIX = "step0001_得意先マスタ"
+PRODUCT_MASTER_STEP0001_PREFIX = "step0001_商品マスタ"
 
 
 class ConversionError(Exception):
-    """CSVを商品マスタTSVへ変換できない場合の例外です。"""
+    """CSVやTSVを処理できない場合の例外です。"""
 
 
 def validate_input_path(pszInputPath: str) -> str:
@@ -21,8 +24,6 @@ def validate_input_path(pszInputPath: str) -> str:
         raise ConversionError("入力ファイルが見つかりません: " + pszInputPath)
     if os.path.splitext(pszInputPath)[1].lower() != ".csv":
         raise ConversionError("拡張子がCSVのファイルを指定してください。")
-    if PRODUCT_MASTER_NAME not in os.path.basename(pszInputPath):
-        raise ConversionError("ファイル名に「商品マスタ」を含むCSVを指定してください。")
     return pszInputPath
 
 
@@ -32,7 +33,7 @@ def create_output_path(pszInputPath: str) -> str:
 
 
 def convert_csv_to_tsv(pszInputPath: str) -> str:
-    """CP932の43列CSVをBOMなしUTF-8、タブ区切りで上書き出力します。"""
+    """CP932のCSVをBOMなしUTF-8、タブ区切りで上書き出力します。"""
     pszInputPath = validate_input_path(pszInputPath)
     pszOutputPath = create_output_path(pszInputPath)
 
@@ -90,22 +91,201 @@ def create_step0001_tsv(pszInputTsvPath: str) -> str:
     return pszOutputPath
 
 
+def find_tsv_header_index(
+    arrHeader: List[str], arrCandidateNames: List[str], pszInputPath: str
+) -> int:
+    for pszCandidateName in arrCandidateNames:
+        if pszCandidateName in arrHeader:
+            return arrHeader.index(pszCandidateName)
+    raise ConversionError(
+        "必要な見出しがTSVにありません: "
+        + " / ".join(arrCandidateNames)
+        + " ("
+        + os.path.basename(pszInputPath)
+        + ")"
+    )
+
+
+def read_master_lookup(
+    pszInputPath: str,
+    arrKeyHeaderNames: List[str],
+    arrValueHeaderNames: List[str],
+) -> Dict[str, Tuple[str, ...]]:
+    with open(pszInputPath, "r", encoding="utf-8", newline="") as objInput:
+        objReader = csv.reader(objInput, delimiter="\t")
+        arrHeader = next(objReader, None)
+        if arrHeader is None:
+            raise ConversionError("マスタTSVに見出し行がありません: " + pszInputPath)
+        iKeyIndex = find_tsv_header_index(
+            arrHeader, arrKeyHeaderNames, pszInputPath
+        )
+        arrValueIndexes = [
+            find_tsv_header_index(arrHeader, [pszName], pszInputPath)
+            for pszName in arrValueHeaderNames
+        ]
+
+        objLookup: Dict[str, Tuple[str, ...]] = {}
+        for arrRow in objReader:
+            pszKey = arrRow[iKeyIndex] if iKeyIndex < len(arrRow) else ""
+            if not pszKey or pszKey in objLookup:
+                continue
+            objLookup[pszKey] = tuple(
+                arrRow[iIndex] if iIndex < len(arrRow) else ""
+                for iIndex in arrValueIndexes
+            )
+    return objLookup
+
+
+def create_step0002_tsv(
+    pszPriceTsvPath: str,
+    pszCustomerTsvPath: str,
+    pszProductTsvPath: str,
+) -> str:
+    """得意先・商品名をコード照合で追加したstep0002 TSVを作成します。"""
+    pszPriceTsvPath = os.path.abspath(pszPriceTsvPath)
+    pszCustomerTsvPath = os.path.abspath(pszCustomerTsvPath)
+    pszProductTsvPath = os.path.abspath(pszProductTsvPath)
+    pszDirectory, pszFileName = os.path.split(pszPriceTsvPath)
+    if pszFileName.startswith("step0001_"):
+        pszFileName = pszFileName[len("step0001_") :]
+    pszOutputPath = os.path.join(pszDirectory, "step0002_" + pszFileName)
+
+    try:
+        objCustomerLookup = read_master_lookup(
+            pszCustomerTsvPath,
+            ["得意先コード"],
+            ["得意先名(漢字１)", "得意先名(漢字２)", "得意先名(カナ)"],
+        )
+        objProductLookup = read_master_lookup(
+            pszProductTsvPath,
+            ["商品コ－ド", "商品コード"],
+            ["商品名(漢字)", "商品名(カナ)"],
+        )
+        with open(pszPriceTsvPath, "r", encoding="utf-8", newline="") as objInput:
+            objReader = csv.reader(objInput, delimiter="\t")
+            arrHeader = next(objReader, None)
+            if arrHeader is None:
+                raise ConversionError("得意先別商品売上単価TSVに見出し行がありません。")
+            iCustomerCodeIndex = find_tsv_header_index(
+                arrHeader, ["得意先コード"], pszPriceTsvPath
+            )
+            iProductCodeIndex = find_tsv_header_index(
+                arrHeader, ["商品コード", "商品コ－ド"], pszPriceTsvPath
+            )
+            arrOutputHeader: List[str] = []
+            for iIndex, pszValue in enumerate(arrHeader):
+                arrOutputHeader.append(pszValue)
+                if iIndex == iCustomerCodeIndex:
+                    arrOutputHeader.extend(
+                        ["得意先名(漢字１)", "得意先名(漢字２)", "得意先名(カナ)"]
+                    )
+                if iIndex == iProductCodeIndex:
+                    arrOutputHeader.extend(["商品名(漢字)", "商品名(カナ)"])
+
+            with open(pszOutputPath, "w", encoding="utf-8", newline="") as objOutput:
+                objWriter = csv.writer(
+                    objOutput,
+                    delimiter="\t",
+                    lineterminator="\r\n",
+                    quoting=csv.QUOTE_MINIMAL,
+                )
+                objWriter.writerow(arrOutputHeader)
+                for arrRow in objReader:
+                    iRequiredLength = max(
+                        len(arrHeader), iCustomerCodeIndex + 1, iProductCodeIndex + 1
+                    )
+                    arrPaddedRow = arrRow + [""] * max(0, iRequiredLength - len(arrRow))
+                    pszCustomerCode = arrPaddedRow[iCustomerCodeIndex]
+                    pszProductCode = arrPaddedRow[iProductCodeIndex]
+                    arrOutputRow: List[str] = []
+                    for iIndex, pszValue in enumerate(arrPaddedRow):
+                        arrOutputRow.append(pszValue)
+                        if iIndex == iCustomerCodeIndex:
+                            arrOutputRow.extend(
+                                objCustomerLookup.get(
+                                    pszCustomerCode, ("", "", "")
+                                )
+                            )
+                        if iIndex == iProductCodeIndex:
+                            arrOutputRow.extend(
+                                objProductLookup.get(pszProductCode, ("", ""))
+                            )
+                    objWriter.writerow(arrOutputRow)
+    except ConversionError:
+        raise
+    except (OSError, UnicodeError, csv.Error) as objException:
+        raise ConversionError(
+            "step0001 TSVの読み込みまたはstep0002 TSVの書き込みに失敗しました: "
+            + str(objException)
+        ) from objException
+
+    return pszOutputPath
+
+
+def find_step0001_master_paths(
+    pszStep0001Path: str,
+) -> Optional[Tuple[str, str, str]]:
+    pszDirectory, pszFileName = os.path.split(os.path.abspath(pszStep0001Path))
+    for pszPrefix in (
+        PRICE_MASTER_STEP0001_PREFIX,
+        CUSTOMER_MASTER_STEP0001_PREFIX,
+        PRODUCT_MASTER_STEP0001_PREFIX,
+    ):
+        if pszFileName.startswith(pszPrefix):
+            pszSuffix = pszFileName[len(pszPrefix) :]
+            if not pszSuffix.lower().endswith(".tsv"):
+                return None
+            return (
+                os.path.join(pszDirectory, PRICE_MASTER_STEP0001_PREFIX + pszSuffix),
+                os.path.join(pszDirectory, CUSTOMER_MASTER_STEP0001_PREFIX + pszSuffix),
+                os.path.join(pszDirectory, PRODUCT_MASTER_STEP0001_PREFIX + pszSuffix),
+            )
+    return None
+
+
+def create_step0002_tsv_if_ready(
+    pszStep0001Path: str,
+) -> Tuple[Optional[str], List[str]]:
+    arrMasterPaths = find_step0001_master_paths(pszStep0001Path)
+    if arrMasterPaths is None:
+        return None, []
+    pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath = arrMasterPaths
+    arrMissingPaths = [pszPath for pszPath in arrMasterPaths if not os.path.isfile(pszPath)]
+    if arrMissingPaths:
+        return None, arrMissingPaths
+    return (
+        create_step0002_tsv(
+            pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath
+        ),
+        [],
+    )
+
+
 def main() -> int:
     objParser = argparse.ArgumentParser(
-        description="商品マスタCSVをBOMなしUTF-8のTSVへ変換します。"
+        description="CSVをBOMなしUTF-8のTSVへ変換します。"
     )
-    objParser.add_argument("input_csv_path", help="変換する商品マスタCSVのパス")
+    objParser.add_argument("input_csv_path", help="変換するCSVファイルのパス")
     objArgs = objParser.parse_args()
 
     try:
         pszOutputPath = convert_csv_to_tsv(objArgs.input_csv_path)
         pszStep0001Path = create_step0001_tsv(pszOutputPath)
+        pszStep0002Path, arrMissingPaths = create_step0002_tsv_if_ready(
+            pszStep0001Path
+        )
     except ConversionError as objException:
         print("エラー: " + str(objException), file=sys.stderr)
         return 1
 
     print("TSVを作成しました: " + pszOutputPath)
     print("step0001 TSVを作成しました: " + pszStep0001Path)
+    if pszStep0002Path:
+        print("step0002 TSVを作成しました: " + pszStep0002Path)
+    elif arrMissingPaths:
+        print("step0002 TSVは未作成です。不足ファイル:")
+        for pszMissingPath in arrMissingPaths:
+            print("  " + pszMissingPath)
     return 0
 
 

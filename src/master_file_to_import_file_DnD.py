@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""商品マスタCSVをTSVへ変換するWindowsドラッグ＆ドロップ版です。"""
+"""CSVをTSVへ変換するWindowsドラッグ＆ドロップ版です。"""
 
 import csv
 import os
-from typing import List
+from typing import Dict, List, Optional, Tuple
 
 import win32api
 import win32con
@@ -11,6 +11,9 @@ import win32gui
 
 WINDOW_TITLE = "商品マスタ CSV to TSV (Drag & Drop)"
 PARENTHESIS_TRANSLATION_TABLE = str.maketrans("（）", "()")
+PRICE_MASTER_STEP0001_PREFIX = "step0001_得意先別商品売上単価マスタ"
+CUSTOMER_MASTER_STEP0001_PREFIX = "step0001_得意先マスタ"
+PRODUCT_MASTER_STEP0001_PREFIX = "step0001_商品マスタ"
 
 
 class ConversionError(Exception):
@@ -32,7 +35,7 @@ def create_output_path(pszInputPath: str) -> str:
 
 
 def convert_dropped_csv_to_tsv(pszInputPath: str) -> str:
-    """CP932の43列CSVをBOMなしUTF-8のTSVへ変換します。"""
+    """CP932のCSVをBOMなしUTF-8のTSVへ変換します。"""
     pszInputPath = validate_csv_path(pszInputPath)
     pszOutputPath = create_output_path(pszInputPath)
 
@@ -90,6 +93,176 @@ def create_step0001_tsv(pszInputTsvPath: str) -> str:
     return pszOutputPath
 
 
+def find_tsv_header_index(
+    arrHeader: List[str], arrCandidateNames: List[str], pszInputPath: str
+) -> int:
+    for pszCandidateName in arrCandidateNames:
+        if pszCandidateName in arrHeader:
+            return arrHeader.index(pszCandidateName)
+    raise ConversionError(
+        "必要な見出しがTSVにありません: "
+        + " / ".join(arrCandidateNames)
+        + " ("
+        + os.path.basename(pszInputPath)
+        + ")"
+    )
+
+
+def read_master_lookup(
+    pszInputPath: str,
+    arrKeyHeaderNames: List[str],
+    arrValueHeaderNames: List[str],
+) -> Dict[str, Tuple[str, ...]]:
+    with open(pszInputPath, "r", encoding="utf-8", newline="") as objInput:
+        objReader = csv.reader(objInput, delimiter="\t")
+        arrHeader = next(objReader, None)
+        if arrHeader is None:
+            raise ConversionError("マスタTSVに見出し行がありません: " + pszInputPath)
+        iKeyIndex = find_tsv_header_index(
+            arrHeader, arrKeyHeaderNames, pszInputPath
+        )
+        arrValueIndexes = [
+            find_tsv_header_index(arrHeader, [pszName], pszInputPath)
+            for pszName in arrValueHeaderNames
+        ]
+
+        objLookup: Dict[str, Tuple[str, ...]] = {}
+        for arrRow in objReader:
+            pszKey = arrRow[iKeyIndex] if iKeyIndex < len(arrRow) else ""
+            if not pszKey or pszKey in objLookup:
+                continue
+            objLookup[pszKey] = tuple(
+                arrRow[iIndex] if iIndex < len(arrRow) else ""
+                for iIndex in arrValueIndexes
+            )
+    return objLookup
+
+
+def create_step0002_tsv(
+    pszPriceTsvPath: str,
+    pszCustomerTsvPath: str,
+    pszProductTsvPath: str,
+) -> str:
+    """得意先・商品名をコード照合で追加したstep0002 TSVを作成します。"""
+    pszPriceTsvPath = os.path.abspath(pszPriceTsvPath)
+    pszCustomerTsvPath = os.path.abspath(pszCustomerTsvPath)
+    pszProductTsvPath = os.path.abspath(pszProductTsvPath)
+    pszDirectory, pszFileName = os.path.split(pszPriceTsvPath)
+    if pszFileName.startswith("step0001_"):
+        pszFileName = pszFileName[len("step0001_") :]
+    pszOutputPath = os.path.join(pszDirectory, "step0002_" + pszFileName)
+
+    try:
+        objCustomerLookup = read_master_lookup(
+            pszCustomerTsvPath,
+            ["得意先コード"],
+            ["得意先名(漢字１)", "得意先名(漢字２)", "得意先名(カナ)"],
+        )
+        objProductLookup = read_master_lookup(
+            pszProductTsvPath,
+            ["商品コ－ド", "商品コード"],
+            ["商品名(漢字)", "商品名(カナ)"],
+        )
+        with open(pszPriceTsvPath, "r", encoding="utf-8", newline="") as objInput:
+            objReader = csv.reader(objInput, delimiter="\t")
+            arrHeader = next(objReader, None)
+            if arrHeader is None:
+                raise ConversionError("得意先別商品売上単価TSVに見出し行がありません。")
+            iCustomerCodeIndex = find_tsv_header_index(
+                arrHeader, ["得意先コード"], pszPriceTsvPath
+            )
+            iProductCodeIndex = find_tsv_header_index(
+                arrHeader, ["商品コード", "商品コ－ド"], pszPriceTsvPath
+            )
+            arrOutputHeader: List[str] = []
+            for iIndex, pszValue in enumerate(arrHeader):
+                arrOutputHeader.append(pszValue)
+                if iIndex == iCustomerCodeIndex:
+                    arrOutputHeader.extend(
+                        ["得意先名(漢字１)", "得意先名(漢字２)", "得意先名(カナ)"]
+                    )
+                if iIndex == iProductCodeIndex:
+                    arrOutputHeader.extend(["商品名(漢字)", "商品名(カナ)"])
+
+            with open(pszOutputPath, "w", encoding="utf-8", newline="") as objOutput:
+                objWriter = csv.writer(
+                    objOutput,
+                    delimiter="\t",
+                    lineterminator="\r\n",
+                    quoting=csv.QUOTE_MINIMAL,
+                )
+                objWriter.writerow(arrOutputHeader)
+                for arrRow in objReader:
+                    iRequiredLength = max(
+                        len(arrHeader), iCustomerCodeIndex + 1, iProductCodeIndex + 1
+                    )
+                    arrPaddedRow = arrRow + [""] * max(0, iRequiredLength - len(arrRow))
+                    pszCustomerCode = arrPaddedRow[iCustomerCodeIndex]
+                    pszProductCode = arrPaddedRow[iProductCodeIndex]
+                    arrOutputRow: List[str] = []
+                    for iIndex, pszValue in enumerate(arrPaddedRow):
+                        arrOutputRow.append(pszValue)
+                        if iIndex == iCustomerCodeIndex:
+                            arrOutputRow.extend(
+                                objCustomerLookup.get(
+                                    pszCustomerCode, ("", "", "")
+                                )
+                            )
+                        if iIndex == iProductCodeIndex:
+                            arrOutputRow.extend(
+                                objProductLookup.get(pszProductCode, ("", ""))
+                            )
+                    objWriter.writerow(arrOutputRow)
+    except ConversionError:
+        raise
+    except (OSError, UnicodeError, csv.Error) as objException:
+        raise ConversionError(
+            "step0001 TSVの読み込みまたはstep0002 TSVの書き込みに失敗しました: "
+            + str(objException)
+        ) from objException
+
+    return pszOutputPath
+
+
+def find_step0001_master_paths(
+    pszStep0001Path: str,
+) -> Optional[Tuple[str, str, str]]:
+    pszDirectory, pszFileName = os.path.split(os.path.abspath(pszStep0001Path))
+    for pszPrefix in (
+        PRICE_MASTER_STEP0001_PREFIX,
+        CUSTOMER_MASTER_STEP0001_PREFIX,
+        PRODUCT_MASTER_STEP0001_PREFIX,
+    ):
+        if pszFileName.startswith(pszPrefix):
+            pszSuffix = pszFileName[len(pszPrefix) :]
+            if not pszSuffix.lower().endswith(".tsv"):
+                return None
+            return (
+                os.path.join(pszDirectory, PRICE_MASTER_STEP0001_PREFIX + pszSuffix),
+                os.path.join(pszDirectory, CUSTOMER_MASTER_STEP0001_PREFIX + pszSuffix),
+                os.path.join(pszDirectory, PRODUCT_MASTER_STEP0001_PREFIX + pszSuffix),
+            )
+    return None
+
+
+def create_step0002_tsv_if_ready(
+    pszStep0001Path: str,
+) -> Tuple[Optional[str], List[str]]:
+    arrMasterPaths = find_step0001_master_paths(pszStep0001Path)
+    if arrMasterPaths is None:
+        return None, []
+    pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath = arrMasterPaths
+    arrMissingPaths = [pszPath for pszPath in arrMasterPaths if not os.path.isfile(pszPath)]
+    if arrMissingPaths:
+        return None, arrMissingPaths
+    return (
+        create_step0002_tsv(
+            pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath
+        ),
+        [],
+    )
+
+
 def show_message(pszMessage: str, bIsError: bool = False) -> None:
     iIcon = win32con.MB_ICONERROR if bIsError else win32con.MB_ICONINFORMATION
     win32gui.MessageBox(0, pszMessage, WINDOW_TITLE, win32con.MB_OK | iIcon)
@@ -104,6 +277,8 @@ def draw_instruction_text(iWindowHandle: int) -> None:
             "CSVファイルをここにドラッグ＆ドロップしてください。\n\n"
             "CP932のCSVを、同じフォルダーにBOMなしUTF-8のTSVとして作成します。\n"
             "同名のTSVがある場合は上書きします。\n\n"
+            "得意先別商品売上単価・得意先・商品マスタのstep0001 TSVが揃うと、"
+            "step0002 TSVも作成します。\n\n"
             "複数ファイルをまとめて処理できます。"
         )
         win32gui.DrawText(
@@ -137,12 +312,14 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
             return 0
 
         arrSummaryLines: List[str] = []
+        arrProcessedStep0001Paths: List[str] = []
         iSuccessCount = 0
         iFailureCount = 0
         for pszInputPath in arrInputPaths:
             try:
                 pszOutputPath = convert_dropped_csv_to_tsv(pszInputPath)
                 pszStep0001Path = create_step0001_tsv(pszOutputPath)
+                arrProcessedStep0001Paths.append(pszStep0001Path)
             except ConversionError as objException:
                 iFailureCount += 1
                 arrSummaryLines.append(
@@ -162,6 +339,40 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                     + os.path.basename(pszStep0001Path)
                 )
 
+        arrStep0002Lines: List[str] = []
+        arrCheckedPricePaths = set()
+        bStep0002Error = False
+        for pszStep0001Path in arrProcessedStep0001Paths:
+            arrMasterPaths = find_step0001_master_paths(pszStep0001Path)
+            if arrMasterPaths is None:
+                continue
+            pszPriceTsvPath = arrMasterPaths[0]
+            if pszPriceTsvPath in arrCheckedPricePaths:
+                continue
+            arrCheckedPricePaths.add(pszPriceTsvPath)
+            try:
+                pszStep0002Path, arrMissingPaths = create_step0002_tsv_if_ready(
+                    pszStep0001Path
+                )
+            except ConversionError as objException:
+                bStep0002Error = True
+                arrStep0002Lines.append(
+                    "step0002作成失敗: "
+                    + os.path.basename(pszPriceTsvPath)
+                    + "\n  "
+                    + str(objException)
+                )
+            else:
+                if pszStep0002Path:
+                    arrStep0002Lines.append(
+                        "step0002作成: " + os.path.basename(pszStep0002Path)
+                    )
+                elif arrMissingPaths:
+                    arrStep0002Lines.append(
+                        "step0002未作成（必要なstep0001ファイルが不足）:\n  "
+                        + "\n  ".join(os.path.basename(pszPath) for pszPath in arrMissingPaths)
+                    )
+
         pszSummary = (
             "処理結果: "
             + str(len(arrInputPaths))
@@ -172,7 +383,9 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
             + "件）\n\n"
             + "\n\n".join(arrSummaryLines)
         )
-        show_message(pszSummary, iFailureCount > 0)
+        if arrStep0002Lines:
+            pszSummary += "\n\n" + "\n\n".join(arrStep0002Lines)
+        show_message(pszSummary, iFailureCount > 0 or bStep0002Error)
         return 0
     if iMessage == win32con.WM_PAINT:
         draw_instruction_text(iWindowHandle)
