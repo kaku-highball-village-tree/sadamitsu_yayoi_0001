@@ -103,7 +103,7 @@ def draw_instruction_text(iWindowHandle: int) -> None:
             "CSVファイルをここにドラッグ＆ドロップしてください。\n\n"
             "CP932のCSVを、同じフォルダーにBOMなしUTF-8のTSVとして作成します。\n"
             "同名のTSVがある場合は上書きします。\n\n"
-            "一度に1ファイルを処理します。"
+            "複数ファイルをまとめて処理できます。"
         )
         win32gui.DrawText(
             iDeviceContextHandle,
@@ -131,26 +131,47 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
         finally:
             win32api.DragFinish(iDropHandle)
 
-        if len(arrInputPaths) != 1:
-            show_message(
-                "一度に1ファイルだけドラッグ＆ドロップしてください。\n"
-                "ドロップされたファイル数: " + str(len(arrInputPaths)),
-                True,
-            )
+        if not arrInputPaths:
+            show_message("ドラッグされたファイルがありません。", True)
             return 0
 
-        try:
-            pszOutputPath = convert_dropped_csv_to_tsv(arrInputPaths[0])
-            pszStep0001Path = create_step0001_tsv(pszOutputPath)
-        except ConversionError as objException:
-            show_message(str(objException), True)
-        else:
-            show_message(
-                "TSVを作成しました:\n"
-                + pszOutputPath
-                + "\n\nstep0001 TSVを作成しました:\n"
-                + pszStep0001Path
-            )
+        arrSummaryLines: List[str] = []
+        iSuccessCount = 0
+        iFailureCount = 0
+        for pszInputPath in arrInputPaths:
+            try:
+                pszOutputPath = convert_dropped_csv_to_tsv(pszInputPath)
+                pszStep0001Path = create_step0001_tsv(pszOutputPath)
+            except ConversionError as objException:
+                iFailureCount += 1
+                arrSummaryLines.append(
+                    "失敗: "
+                    + os.path.basename(pszInputPath)
+                    + "\n  "
+                    + str(objException)
+                )
+            else:
+                iSuccessCount += 1
+                arrSummaryLines.append(
+                    "成功: "
+                    + os.path.basename(pszInputPath)
+                    + "\n  作成: "
+                    + os.path.basename(pszOutputPath)
+                    + "、"
+                    + os.path.basename(pszStep0001Path)
+                )
+
+        pszSummary = (
+            "処理結果: "
+            + str(len(arrInputPaths))
+            + "件（成功: "
+            + str(iSuccessCount)
+            + "件、失敗: "
+            + str(iFailureCount)
+            + "件）\n\n"
+            + "\n\n".join(arrSummaryLines)
+        )
+        show_message(pszSummary, iFailureCount > 0)
         return 0
     if iMessage == win32con.WM_PAINT:
         draw_instruction_text(iWindowHandle)
