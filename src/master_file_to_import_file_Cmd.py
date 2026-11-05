@@ -8,7 +8,6 @@ import sys
 
 
 PRODUCT_MASTER_NAME = "商品マスタ"
-EXPECTED_COLUMN_COUNT = 43
 
 
 class ConversionError(Exception):
@@ -46,17 +45,8 @@ def convert_csv_to_tsv(pszInputPath: str) -> str:
                     lineterminator="\r\n",
                     quoting=csv.QUOTE_MINIMAL,
                 )
-                iRowCount = 0
-                for iLineNumber, arrRow in enumerate(objReader, start=1):
-                    if len(arrRow) != EXPECTED_COLUMN_COUNT:
-                        raise ConversionError(
-                            f"{iLineNumber}行目の項目数が"
-                            f"{EXPECTED_COLUMN_COUNT}項目ではありません: {len(arrRow)}項目"
-                        )
+                for arrRow in objReader:
                     objWriter.writerow(arrRow)
-                    iRowCount += 1
-                if iRowCount == 0:
-                    raise ConversionError("CSVにデータがありません。")
     except (OSError, UnicodeError, csv.Error) as objException:
         raise ConversionError(
             "CSVの読み込みまたはTSVの書き込みに失敗しました: "
