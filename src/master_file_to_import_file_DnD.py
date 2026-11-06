@@ -3,6 +3,7 @@
 
 import csv
 import os
+import textwrap
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
@@ -482,6 +483,29 @@ def create_step0002_excel_file(
 
 
 def show_message(pszMessage: str, bIsError: bool = False) -> None:
+    iScreenWidth = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
+    iScreenHeight = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+    iMaxCharactersPerLine = max(24, min(80, (iScreenWidth - 160) // 17))
+    iMaxLines = max(8, min(32, (iScreenHeight - 180) // 24))
+    arrDisplayLines: List[str] = []
+    bTruncated = False
+
+    for pszLine in pszMessage.splitlines():
+        arrWrappedLines = textwrap.wrap(
+            pszLine,
+            width=iMaxCharactersPerLine,
+            break_long_words=True,
+            break_on_hyphens=False,
+        ) or [""]
+        if len(arrDisplayLines) + len(arrWrappedLines) > iMaxLines:
+            bTruncated = True
+            break
+        arrDisplayLines.extend(arrWrappedLines)
+
+    if bTruncated:
+        arrDisplayLines = arrDisplayLines[: iMaxLines - 1]
+        arrDisplayLines.append("（以降の結果を省略しました）")
+    pszMessage = "\n".join(arrDisplayLines)
     iIcon = win32con.MB_ICONERROR if bIsError else win32con.MB_ICONINFORMATION
     win32gui.MessageBox(0, pszMessage, WINDOW_TITLE, win32con.MB_OK | iIcon)
 
