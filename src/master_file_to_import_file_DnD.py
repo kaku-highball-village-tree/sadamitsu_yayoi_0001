@@ -17,6 +17,7 @@ PARENTHESIS_TRANSLATION_TABLE = str.maketrans("（）", "()")
 PRICE_MASTER_STEP0001_PREFIX = "step0001_得意先別商品売上単価マスタ"
 CUSTOMER_MASTER_STEP0001_PREFIX = "step0001_得意先マスタ"
 PRODUCT_MASTER_STEP0001_PREFIX = "step0001_商品マスタ"
+INVENTORY_MASTER_STEP0001_PREFIX = "step0001_在庫マスタ"
 
 
 class ConversionError(Exception):
@@ -270,6 +271,83 @@ def create_step0002_name_inserted_tsv(
     )
 
 
+def create_inventory_step0002_tsv(
+    pszInventoryTsvPath: str, pszProductTsvPath: str
+) -> str:
+    """商品名2列を商品コードの直後に加えた在庫step0002 TSVを作成します。"""
+    return _create_inventory_step0002_tsv(
+        pszInventoryTsvPath, pszProductTsvPath, False
+    )
+
+
+def create_inventory_step0002_name_inserted_tsv(
+    pszInventoryTsvPath: str, pszProductTsvPath: str
+) -> str:
+    """商品名(漢字)を商品コードの直後に加えた在庫TSVを作成します。"""
+    return _create_inventory_step0002_tsv(
+        pszInventoryTsvPath, pszProductTsvPath, True
+    )
+
+
+def _create_inventory_step0002_tsv(
+    pszInventoryTsvPath: str, pszProductTsvPath: str, bNameInsertedOnly: bool
+) -> str:
+    pszInventoryTsvPath = os.path.abspath(pszInventoryTsvPath)
+    pszProductTsvPath = os.path.abspath(pszProductTsvPath)
+    pszDirectory, pszFileName = os.path.split(pszInventoryTsvPath)
+    if pszFileName.startswith("step0001_"):
+        pszFileName = pszFileName[len("step0001_") :]
+    if bNameInsertedOnly and pszFileName.startswith("在庫マスタ"):
+        pszFileName = "在庫マスタ_名挿入" + pszFileName[len("在庫マスタ") :]
+    pszOutputPath = os.path.join(pszDirectory, "step0002_" + pszFileName)
+
+    try:
+        objProductLookup = read_master_lookup(
+            pszProductTsvPath,
+            ["商品コ－ド", "商品コード"],
+            ["商品名(漢字)", "商品名(カナ)"],
+        )
+        with open(pszInventoryTsvPath, "r", encoding="utf-8", newline="") as objInput:
+            objReader = csv.reader(objInput, delimiter="\t")
+            arrHeader = next(objReader, None)
+            if arrHeader is None:
+                raise ConversionError("在庫マスタTSVに見出し行がありません。")
+            iProductCodeIndex = find_tsv_header_index(
+                arrHeader, ["商品コード", "商品コ－ド"], pszInventoryTsvPath
+            )
+            arrNameHeaders = ["商品名(漢字)"] if bNameInsertedOnly else [
+                "商品名(漢字)", "商品名(カナ)"
+            ]
+            arrOutputHeader = list(arrHeader)
+            arrOutputHeader[iProductCodeIndex + 1 : iProductCodeIndex + 1] = arrNameHeaders
+
+            with open(pszOutputPath, "w", encoding="utf-8", newline="") as objOutput:
+                objWriter = csv.writer(
+                    objOutput,
+                    delimiter="\t",
+                    lineterminator="\r\n",
+                    quoting=csv.QUOTE_MINIMAL,
+                )
+                objWriter.writerow(arrOutputHeader)
+                for arrRow in objReader:
+                    arrPaddedRow = arrRow + [""] * max(0, len(arrHeader) - len(arrRow))
+                    pszProductCode = arrPaddedRow[iProductCodeIndex]
+                    arrProductNames = objProductLookup.get(pszProductCode, ("", ""))
+                    arrOutputRow = list(arrPaddedRow)
+                    arrOutputRow[iProductCodeIndex + 1 : iProductCodeIndex + 1] = (
+                        list(arrProductNames[: len(arrNameHeaders)])
+                    )
+                    objWriter.writerow(arrOutputRow)
+    except ConversionError:
+        raise
+    except (OSError, UnicodeError, csv.Error) as objException:
+        raise ConversionError(
+            "在庫または商品マスタTSVの読み込み・step0002 TSVの書き込みに失敗しました: "
+            + str(objException)
+        ) from objException
+    return pszOutputPath
+
+
 def find_step0001_master_paths(
     pszStep0001Path: str,
 ) -> Optional[Tuple[str, str, str]]:
@@ -306,6 +384,50 @@ def create_step0002_tsv_if_ready(
     )
     pszStep0002NameInsertedPath = create_step0002_name_inserted_tsv(
         pszPriceTsvPath, pszCustomerTsvPath, pszProductTsvPath
+    )
+    pszExcelPath = create_step0002_excel_file(
+        pszStep0002Path, pszStep0002NameInsertedPath
+    )
+    return pszStep0002Path, pszStep0002NameInsertedPath, pszExcelPath, []
+
+
+def find_step0001_inventory_master_paths(
+    pszStep0001Path: str,
+) -> Optional[Tuple[str, str]]:
+    pszDirectory, pszFileName = os.path.split(os.path.abspath(pszStep0001Path))
+    for pszPrefix in (INVENTORY_MASTER_STEP0001_PREFIX, PRODUCT_MASTER_STEP0001_PREFIX):
+        if pszFileName.startswith(pszPrefix):
+            pszSuffix = pszFileName[len(pszPrefix) :]
+            if not pszSuffix.lower().endswith(".tsv"):
+                return None
+            return (
+                os.path.join(pszDirectory, INVENTORY_MASTER_STEP0001_PREFIX + pszSuffix),
+                os.path.join(pszDirectory, PRODUCT_MASTER_STEP0001_PREFIX + pszSuffix),
+            )
+    return None
+
+
+def create_inventory_step0002_tsv_if_ready(
+    pszStep0001Path: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str], List[str]]:
+    arrMasterPaths = find_step0001_inventory_master_paths(pszStep0001Path)
+    if arrMasterPaths is None:
+        return None, None, None, []
+    pszInventoryTsvPath, pszProductTsvPath = arrMasterPaths
+    pszInputFileName = os.path.basename(os.path.abspath(pszStep0001Path))
+    if (
+        not pszInputFileName.startswith(INVENTORY_MASTER_STEP0001_PREFIX)
+        and not os.path.isfile(pszInventoryTsvPath)
+    ):
+        return None, None, None, []
+    arrMissingPaths = [pszPath for pszPath in arrMasterPaths if not os.path.isfile(pszPath)]
+    if arrMissingPaths:
+        return None, None, None, arrMissingPaths
+    pszStep0002Path = create_inventory_step0002_tsv(
+        pszInventoryTsvPath, pszProductTsvPath
+    )
+    pszStep0002NameInsertedPath = create_inventory_step0002_name_inserted_tsv(
+        pszInventoryTsvPath, pszProductTsvPath
     )
     pszExcelPath = create_step0002_excel_file(
         pszStep0002Path, pszStep0002NameInsertedPath
@@ -375,6 +497,7 @@ def draw_instruction_text(iWindowHandle: int) -> None:
             "同名のTSVがある場合は上書きします。\n\n"
             "得意先別商品売上単価・得意先・商品マスタのstep0001 TSVが揃うと、"
             "通常版と名挿入版のstep0002 TSV、および2シートのExcelファイルも作成します。\n\n"
+            "在庫マスタと商品マスタのstep0001 TSVが揃った場合も同様に作成します。\n\n"
             "複数ファイルをまとめて処理できます。"
         )
         win32gui.DrawText(
@@ -481,6 +604,54 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                     arrStep0002Lines.append(
                         "step0002未作成（必要なstep0001ファイルが不足）:\n  "
                         + "\n  ".join(os.path.basename(pszPath) for pszPath in arrMissingPaths)
+                    )
+
+        arrCheckedInventoryPaths = set()
+        for pszStep0001Path in arrProcessedStep0001Paths:
+            arrMasterPaths = find_step0001_inventory_master_paths(pszStep0001Path)
+            if arrMasterPaths is None:
+                continue
+            pszInventoryTsvPath = arrMasterPaths[0]
+            if pszInventoryTsvPath in arrCheckedInventoryPaths:
+                continue
+            arrCheckedInventoryPaths.add(pszInventoryTsvPath)
+            try:
+                (
+                    pszInventoryStep0002Path,
+                    pszInventoryNameInsertedPath,
+                    pszInventoryExcelPath,
+                    arrInventoryMissingPaths,
+                ) = create_inventory_step0002_tsv_if_ready(pszStep0001Path)
+            except ConversionError as objException:
+                bStep0002Error = True
+                arrStep0002Lines.append(
+                    "在庫step0002作成失敗: "
+                    + os.path.basename(pszInventoryTsvPath)
+                    + "\n  "
+                    + str(objException)
+                )
+            else:
+                if pszInventoryStep0002Path:
+                    arrStep0002Lines.append(
+                        "在庫step0002作成: "
+                        + os.path.basename(pszInventoryStep0002Path)
+                    )
+                if pszInventoryNameInsertedPath:
+                    arrStep0002Lines.append(
+                        "在庫名挿入step0002作成: "
+                        + os.path.basename(pszInventoryNameInsertedPath)
+                    )
+                if pszInventoryExcelPath:
+                    arrStep0002Lines.append(
+                        "在庫Excel作成: " + os.path.basename(pszInventoryExcelPath)
+                    )
+                elif arrInventoryMissingPaths:
+                    arrStep0002Lines.append(
+                        "在庫step0002未作成（必要なstep0001ファイルが不足）:\n  "
+                        + "\n  ".join(
+                            os.path.basename(pszPath)
+                            for pszPath in arrInventoryMissingPaths
+                        )
                     )
 
         pszSummary = (
