@@ -5,10 +5,15 @@ import argparse
 import csv
 import os
 import sys
+import tempfile
+import zipfile
+from decimal import Decimal, InvalidOperation
+from xml.etree import ElementTree
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
 from openpyxl.utils.exceptions import IllegalCharacterError
+from openpyxl.utils import get_column_letter
 
 
 PARENTHESIS_TRANSLATION_TABLE = str.maketrans("（）", "()")
@@ -16,6 +21,23 @@ PRICE_MASTER_STEP0001_PREFIX = "step0001_得意先別商品売上単価マスタ
 CUSTOMER_MASTER_STEP0001_PREFIX = "step0001_得意先マスタ"
 PRODUCT_MASTER_STEP0001_PREFIX = "step0001_商品マスタ"
 INVENTORY_MASTER_STEP0001_PREFIX = "step0001_在庫マスタ"
+EXCEL_NUMERIC_HEADERS = {
+    "売上単価(ｋｇ)",
+    "売上単価(個数)",
+    "社内単価(ｋｇ)",
+    "社内単価(個数)",
+    "売上単価(その他)",
+    "期首在庫数量",
+    "仕入数量",
+    "入庫出来高数量",
+    "入庫移動数量",
+    "入庫その他数量１",
+    "売上数量",
+    "出庫出来高数量",
+    "出庫移動数量",
+    "出庫その他数量２",
+    "実棚卸数量",
+}
 
 
 class ConversionError(Exception):
@@ -444,6 +466,7 @@ def create_step0002_excel_file(
         pszDirectory, os.path.splitext(pszFileName[len("step0002_") :])[0] + ".xlsx"
     )
 
+    arrSheetTextRanges: List[str] = []
     try:
         objWorkbook = Workbook()
         for iIndex, (pszTsvPath, pszSheetName) in enumerate(
@@ -456,15 +479,70 @@ def create_step0002_excel_file(
                 objWorkbook.active if iIndex == 0 else objWorkbook.create_sheet()
             )
             objSheet.title = pszSheetName
+            arrHeaders: List[str] = []
+            arrIgnoredCells: List[str] = []
+            iLastRow = 0
             with open(pszTsvPath, "r", encoding="utf-8", newline="") as objInput:
                 for iRow, arrValues in enumerate(
                     csv.reader(objInput, delimiter="\t"), start=1
                 ):
+                    iLastRow = iRow
+                    if iRow == 1:
+                        arrHeaders = arrValues
                     for iColumn, pszValue in enumerate(arrValues, start=1):
-                        objCell = objSheet.cell(iRow, iColumn, pszValue)
-                        objCell.data_type = "s"
-                        objCell.number_format = "@"
+                        pszHeader = (
+                            arrHeaders[iColumn - 1]
+                            if iColumn <= len(arrHeaders)
+                            else ""
+                        )
+                        if (
+                            iRow > 1
+                            and pszHeader in EXCEL_NUMERIC_HEADERS
+                            and pszValue
+                        ):
+                            try:
+                                objValue = Decimal(pszValue)
+                                if not objValue.is_finite():
+                                    raise InvalidOperation
+                            except InvalidOperation:
+                                objValue = pszValue
+                                arrIgnoredCells.append(
+                                    get_column_letter(iColumn) + str(iRow)
+                                )
+                            else:
+                                if len(objValue.as_tuple().digits) > 15:
+                                    objValue = pszValue
+                                    arrIgnoredCells.append(
+                                        get_column_letter(iColumn) + str(iRow)
+                                    )
+                                elif objValue == objValue.to_integral_value():
+                                    objValue = int(objValue)
+                            objCell = objSheet.cell(iRow, iColumn, objValue)
+                            if isinstance(objValue, str):
+                                objCell.data_type = "s"
+                                objCell.number_format = "@"
+                        else:
+                            objCell = objSheet.cell(iRow, iColumn, pszValue)
+                            objCell.data_type = "s"
+                            objCell.number_format = "@"
+            if iLastRow > 1:
+                arrTextColumnRanges = [
+                    get_column_letter(iColumn)
+                    + "2:"
+                    + get_column_letter(iColumn)
+                    + str(iLastRow)
+                    for iColumn, pszHeader in enumerate(arrHeaders, start=1)
+                    if pszHeader not in EXCEL_NUMERIC_HEADERS
+                ]
+                arrSheetTextRanges.append(" ".join(arrTextColumnRanges))
+            else:
+                arrSheetTextRanges.append("")
+            if arrIgnoredCells:
+                arrSheetTextRanges[-1] = " ".join(
+                    filter(None, [arrSheetTextRanges[-1], " ".join(arrIgnoredCells)])
+                )
         objWorkbook.save(pszExcelPath)
+        ignore_excel_text_number_warnings(pszExcelPath, arrSheetTextRanges)
     except (
         OSError,
         UnicodeError,
@@ -477,6 +555,91 @@ def create_step0002_excel_file(
             + str(objException)
         ) from objException
     return pszExcelPath
+
+
+def ignore_excel_text_number_warnings(
+    pszExcelPath: str, arrSheetTextRanges: List[str]
+) -> None:
+    """文字列で保持する列に「数値が文字列」警告の無視範囲を設定します。"""
+    pszTemporaryPath = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="excel_ignored_errors_",
+            suffix=".xlsx",
+            dir=os.path.dirname(pszExcelPath),
+            delete=False,
+        ) as objTemporaryFile:
+            pszTemporaryPath = objTemporaryFile.name
+
+        pszSpreadsheetNamespace = (
+            "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        )
+        ElementTree.register_namespace("", pszSpreadsheetNamespace)
+        with zipfile.ZipFile(pszExcelPath, "r") as objSourceZip:
+            with zipfile.ZipFile(
+                pszTemporaryPath, "w", compression=zipfile.ZIP_DEFLATED
+            ) as objOutputZip:
+                for objZipInfo in objSourceZip.infolist():
+                    objData = objSourceZip.read(objZipInfo.filename)
+                    pszName = objZipInfo.filename
+                    if pszName.startswith("xl/worksheets/sheet") and pszName.endswith(
+                        ".xml"
+                    ):
+                        pszSheetNumber = os.path.splitext(
+                            os.path.basename(pszName)
+                        )[0][len("sheet") :]
+                        if pszSheetNumber.isdigit():
+                            iSheetIndex = int(pszSheetNumber) - 1
+                            if (
+                                iSheetIndex < len(arrSheetTextRanges)
+                                and arrSheetTextRanges[iSheetIndex]
+                            ):
+                                objRoot = ElementTree.fromstring(objData)
+                                pszIgnoredErrorsTag = (
+                                    "{" + pszSpreadsheetNamespace + "}ignoredErrors"
+                                )
+                                objIgnoredErrors = ElementTree.Element(
+                                    pszIgnoredErrorsTag
+                                )
+                                objIgnoredError = ElementTree.SubElement(
+                                    objIgnoredErrors,
+                                    "{" + pszSpreadsheetNamespace + "}ignoredError",
+                                )
+                                objIgnoredError.set(
+                                    "sqref", arrSheetTextRanges[iSheetIndex]
+                                )
+                                objIgnoredError.set("numberStoredAsText", "1")
+                                arrTrailingTags = {
+                                    "drawing",
+                                    "legacyDrawing",
+                                    "legacyDrawingHF",
+                                    "picture",
+                                    "oleObjects",
+                                    "controls",
+                                    "webPublishItems",
+                                    "tableParts",
+                                    "extLst",
+                                }
+                                iInsertIndex = len(objRoot)
+                                for iIndex, objChild in enumerate(objRoot):
+                                    pszChildTag = objChild.tag.rsplit("}", 1)[-1]
+                                    if pszChildTag in arrTrailingTags:
+                                        iInsertIndex = iIndex
+                                        break
+                                objRoot.insert(iInsertIndex, objIgnoredErrors)
+                                objData = ElementTree.tostring(
+                                    objRoot,
+                                    encoding="utf-8",
+                                    xml_declaration=True,
+                                )
+                    objOutputZip.writestr(objZipInfo, objData)
+        os.replace(pszTemporaryPath, pszExcelPath)
+    except (OSError, ValueError, zipfile.BadZipFile, ElementTree.ParseError) as objException:
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+        raise ConversionError(
+            "Excelの文字列セル警告設定に失敗しました: " + str(objException)
+        ) from objException
 
 
 def main() -> int:
