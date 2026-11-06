@@ -5,6 +5,7 @@ import csv
 import os
 import textwrap
 import tempfile
+import unicodedata
 import zipfile
 from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree
@@ -41,6 +42,7 @@ EXCEL_NUMERIC_HEADERS = {
     "出庫その他数量２",
     "実棚卸数量",
 }
+EXCEL_MAX_COLUMN_WIDTH = 25
 
 
 class ConversionError(Exception):
@@ -544,6 +546,7 @@ def create_step0002_excel_file(
                 arrSheetTextRanges[-1] = " ".join(
                     filter(None, [arrSheetTextRanges[-1], " ".join(arrIgnoredCells)])
                 )
+        adjust_excel_column_widths(objWorkbook)
         objWorkbook.save(pszExcelPath)
         ignore_excel_text_number_warnings(pszExcelPath, arrSheetTextRanges)
     except (
@@ -558,6 +561,26 @@ def create_step0002_excel_file(
             + str(objException)
         ) from objException
     return pszExcelPath
+
+
+def adjust_excel_column_widths(objWorkbook: Workbook) -> None:
+    """各シートの内容に合わせて幅を調整し、25を上限にします。"""
+    for objSheet in objWorkbook.worksheets:
+        for arrColumnCells in objSheet.iter_cols():
+            iMaximumWidth = 0
+            for objCell in arrColumnCells:
+                if objCell.value is None:
+                    continue
+                pszValue = str(objCell.value)
+                iCellWidth = sum(
+                    2 if unicodedata.east_asian_width(pszCharacter) in ("F", "W") else 1
+                    for pszCharacter in pszValue
+                )
+                iMaximumWidth = max(iMaximumWidth, iCellWidth)
+            iColumn = arrColumnCells[0].column
+            objSheet.column_dimensions[get_column_letter(iColumn)].width = min(
+                max(1, iMaximumWidth), EXCEL_MAX_COLUMN_WIDTH
+            )
 
 
 def ignore_excel_text_number_warnings(
