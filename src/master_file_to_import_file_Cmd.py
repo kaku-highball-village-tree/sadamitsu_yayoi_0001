@@ -119,6 +119,42 @@ def create_step0001_tsv(pszInputTsvPath: str) -> str:
     return pszOutputPath
 
 
+def create_step0001_excel_file(pszStep0001TsvPath: str) -> str:
+    """step0001 TSVを同名の1シートExcelへ、値を文字列のまま出力します。"""
+    pszStep0001TsvPath = os.path.abspath(pszStep0001TsvPath)
+    pszExcelPath = os.path.splitext(pszStep0001TsvPath)[0] + ".xlsx"
+    iLastRow = 0
+    iLastColumn = 0
+
+    try:
+        objWorkbook = Workbook()
+        objWorksheet = objWorkbook.active
+        with open(pszStep0001TsvPath, "r", encoding="utf-8", newline="") as objInput:
+            for iRow, arrValues in enumerate(
+                csv.reader(objInput, delimiter="\t"), start=1
+            ):
+                iLastRow = iRow
+                iLastColumn = max(iLastColumn, len(arrValues))
+                for iColumn, pszValue in enumerate(arrValues, start=1):
+                    objCell = objWorksheet.cell(iRow, iColumn, pszValue)
+                    objCell.data_type = "s"
+                    objCell.number_format = "@"
+        objWorkbook.save(pszExcelPath)
+        if iLastRow > 1 and iLastColumn > 0:
+            pszLastColumn = get_column_letter(iLastColumn)
+            ignore_excel_text_number_warnings(
+                pszExcelPath,
+                ["A2:" + pszLastColumn + str(iLastRow)],
+            )
+    except (OSError, UnicodeError, csv.Error, ValueError, IllegalCharacterError) as objException:
+        raise ConversionError(
+            "step0001 TSVの読み込みまたはExcelファイルの作成に失敗しました: "
+            + str(objException)
+        ) from objException
+
+    return pszExcelPath
+
+
 def find_tsv_header_index(
     arrHeader: List[str], arrCandidateNames: List[str], pszInputPath: str
 ) -> int:
@@ -675,6 +711,7 @@ def main() -> int:
     try:
         pszOutputPath = convert_csv_to_tsv(objArgs.input_csv_path)
         pszStep0001Path = create_step0001_tsv(pszOutputPath)
+        pszStep0001ExcelPath = create_step0001_excel_file(pszStep0001Path)
         (
             pszStep0002Path,
             pszStep0002NameInsertedPath,
@@ -695,6 +732,7 @@ def main() -> int:
 
     print("TSVを作成しました: " + pszOutputPath)
     print("step0001 TSVを作成しました: " + pszStep0001Path)
+    print("step0001 Excelファイルを作成しました: " + pszStep0001ExcelPath)
     if pszStep0002Path:
         print("step0002 TSVを作成しました: " + pszStep0002Path)
     if pszStep0002NameInsertedPath:

@@ -122,6 +122,42 @@ def create_step0001_tsv(pszInputTsvPath: str) -> str:
     return pszOutputPath
 
 
+def create_step0001_excel_file(pszStep0001TsvPath: str) -> str:
+    """step0001 TSVを同名の1シートExcelへ、値を文字列のまま出力します。"""
+    pszStep0001TsvPath = os.path.abspath(pszStep0001TsvPath)
+    pszExcelPath = os.path.splitext(pszStep0001TsvPath)[0] + ".xlsx"
+    iLastRow = 0
+    iLastColumn = 0
+
+    try:
+        objWorkbook = Workbook()
+        objWorksheet = objWorkbook.active
+        with open(pszStep0001TsvPath, "r", encoding="utf-8", newline="") as objInput:
+            for iRow, arrValues in enumerate(
+                csv.reader(objInput, delimiter="\t"), start=1
+            ):
+                iLastRow = iRow
+                iLastColumn = max(iLastColumn, len(arrValues))
+                for iColumn, pszValue in enumerate(arrValues, start=1):
+                    objCell = objWorksheet.cell(iRow, iColumn, pszValue)
+                    objCell.data_type = "s"
+                    objCell.number_format = "@"
+        objWorkbook.save(pszExcelPath)
+        if iLastRow > 1 and iLastColumn > 0:
+            pszLastColumn = get_column_letter(iLastColumn)
+            ignore_excel_text_number_warnings(
+                pszExcelPath,
+                ["A2:" + pszLastColumn + str(iLastRow)],
+            )
+    except (OSError, UnicodeError, csv.Error, ValueError, IllegalCharacterError) as objException:
+        raise ConversionError(
+            "step0001 TSVの読み込みまたはExcelファイルの作成に失敗しました: "
+            + str(objException)
+        ) from objException
+
+    return pszExcelPath
+
+
 def find_tsv_header_index(
     arrHeader: List[str], arrCandidateNames: List[str], pszInputPath: str
 ) -> int:
@@ -705,6 +741,7 @@ def draw_instruction_text(iWindowHandle: int) -> None:
             "CSVファイルをここにドラッグ＆ドロップしてください。\n\n"
             "CP932のCSVを、同じフォルダーにBOMなしUTF-8のTSVとして作成します。\n"
             "同名のTSVがある場合は上書きします。\n\n"
+            "各step0001 TSVから、同じフォルダーに同名のExcelも作成します。\n\n"
             "得意先別商品売上単価・得意先・商品マスタのstep0001 TSVが揃うと、"
             "通常版と名挿入版のstep0002 TSV、および2シートのExcelファイルも作成します。\n\n"
             "在庫マスタと商品マスタのstep0001 TSVが揃った場合も同様に作成します。\n\n"
@@ -748,6 +785,7 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
             try:
                 pszOutputPath = convert_dropped_csv_to_tsv(pszInputPath)
                 pszStep0001Path = create_step0001_tsv(pszOutputPath)
+                pszStep0001ExcelPath = create_step0001_excel_file(pszStep0001Path)
                 arrProcessedStep0001Paths.append(pszStep0001Path)
             except ConversionError as objException:
                 iFailureCount += 1
@@ -766,6 +804,8 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                     + os.path.basename(pszOutputPath)
                     + "、"
                     + os.path.basename(pszStep0001Path)
+                    + "、"
+                    + os.path.basename(pszStep0001ExcelPath)
                 )
 
         arrStep0002Lines: List[str] = []
