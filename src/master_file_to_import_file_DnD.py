@@ -25,6 +25,9 @@ PRICE_MASTER_STEP0001_PREFIX = "step0001_得意先別商品売上単価マスタ
 CUSTOMER_MASTER_STEP0001_PREFIX = "step0001_得意先マスタ"
 PRODUCT_MASTER_STEP0001_PREFIX = "step0001_商品マスタ"
 INVENTORY_MASTER_STEP0001_PREFIX = "step0001_在庫マスタ"
+SUPPLIER_PRICE_MASTER_STEP0001_PREFIX = "step0001_仕入先別商品単価マスタ"
+SUPPLIER_MASTER_STEP0001_PREFIX = "step0001_仕入先マスタ"
+SUPPLIER_EXCEL_NUMERIC_HEADERS = {"単価(㎏)", "単価(個数)", "単価(その他)"}
 EXCEL_NUMERIC_HEADERS = {
     "売上単価(ｋｇ)",
     "売上単価(個数)",
@@ -332,6 +335,135 @@ def create_step0002_name_inserted_tsv(
     )
 
 
+def _create_supplier_step0002_tsv(
+    pszPriceTsvPath: str,
+    pszSupplierTsvPath: str,
+    pszProductTsvPath: str,
+    bNameInsertedOnly: bool,
+) -> str:
+    """仕入先・商品名をコード照合で追加したstep0002 TSVを作成します。"""
+    pszPriceTsvPath = os.path.abspath(pszPriceTsvPath)
+    pszSupplierTsvPath = os.path.abspath(pszSupplierTsvPath)
+    pszProductTsvPath = os.path.abspath(pszProductTsvPath)
+    pszDirectory, pszFileName = os.path.split(pszPriceTsvPath)
+    if pszFileName.startswith("step0001_"):
+        pszFileName = pszFileName[len("step0001_") :]
+    if bNameInsertedOnly:
+        pszPriceMasterPrefix = "仕入先別商品単価マスタ"
+        if pszFileName.startswith(pszPriceMasterPrefix):
+            pszFileName = (
+                pszPriceMasterPrefix
+                + "_名挿入"
+                + pszFileName[len(pszPriceMasterPrefix) :]
+            )
+    pszOutputPath = os.path.join(pszDirectory, "step0002_" + pszFileName)
+
+    try:
+        objSupplierLookup = read_master_lookup(
+            pszSupplierTsvPath,
+            ["仕入先コード"],
+            ["仕入先名(漢字１)", "仕入先名(漢字２)", "仕入先名(カナ)"],
+        )
+        objProductLookup = read_master_lookup(
+            pszProductTsvPath,
+            ["商品コ－ド", "商品コード"],
+            ["商品名(漢字)", "商品名(カナ)"],
+        )
+        with open(pszPriceTsvPath, "r", encoding="utf-8", newline="") as objInput:
+            objReader = csv.reader(objInput, delimiter="\t")
+            arrHeader = next(objReader, None)
+            if arrHeader is None:
+                raise ConversionError("仕入先別商品単価TSVに見出し行がありません。")
+            iSupplierCodeIndex = find_tsv_header_index(
+                arrHeader, ["仕入先コード"], pszPriceTsvPath
+            )
+            iProductCodeIndex = find_tsv_header_index(
+                arrHeader, ["商品コード", "商品コ－ド"], pszPriceTsvPath
+            )
+            arrOutputHeader: List[str] = []
+            arrSupplierNameHeaders = (
+                ["仕入先名(漢字１)"]
+                if bNameInsertedOnly
+                else ["仕入先名(漢字１)", "仕入先名(漢字２)", "仕入先名(カナ)"]
+            )
+            arrProductNameHeaders = (
+                ["商品名(漢字)"]
+                if bNameInsertedOnly
+                else ["商品名(漢字)", "商品名(カナ)"]
+            )
+            for iIndex, pszValue in enumerate(arrHeader):
+                arrOutputHeader.append(pszValue)
+                if iIndex == iSupplierCodeIndex:
+                    arrOutputHeader.extend(arrSupplierNameHeaders)
+                if iIndex == iProductCodeIndex:
+                    arrOutputHeader.extend(arrProductNameHeaders)
+
+            with open(pszOutputPath, "w", encoding="utf-8", newline="") as objOutput:
+                objWriter = csv.writer(
+                    objOutput,
+                    delimiter="\t",
+                    lineterminator="\r\n",
+                    quoting=csv.QUOTE_MINIMAL,
+                )
+                objWriter.writerow(arrOutputHeader)
+                for arrRow in objReader:
+                    iRequiredLength = max(
+                        len(arrHeader), iSupplierCodeIndex + 1, iProductCodeIndex + 1
+                    )
+                    arrPaddedRow = arrRow + [""] * max(0, iRequiredLength - len(arrRow))
+                    pszSupplierCode = arrPaddedRow[iSupplierCodeIndex]
+                    pszProductCode = arrPaddedRow[iProductCodeIndex]
+                    arrOutputRow: List[str] = []
+                    for iIndex, pszValue in enumerate(arrPaddedRow):
+                        arrOutputRow.append(pszValue)
+                        if iIndex == iSupplierCodeIndex:
+                            arrSupplierNames = objSupplierLookup.get(
+                                pszSupplierCode, ("", "", "")
+                            )
+                            arrOutputRow.extend(
+                                arrSupplierNames[: len(arrSupplierNameHeaders)]
+                            )
+                        if iIndex == iProductCodeIndex:
+                            arrProductNames = objProductLookup.get(
+                                pszProductCode, ("", "")
+                            )
+                            arrOutputRow.extend(
+                                arrProductNames[: len(arrProductNameHeaders)]
+                            )
+                    objWriter.writerow(arrOutputRow)
+    except ConversionError:
+        raise
+    except (OSError, UnicodeError, csv.Error) as objException:
+        raise ConversionError(
+            "step0001 TSVの読み込みまたはstep0002 TSVの書き込みに失敗しました: "
+            + str(objException)
+        ) from objException
+
+    return pszOutputPath
+
+
+def create_supplier_step0002_tsv(
+    pszPriceTsvPath: str,
+    pszSupplierTsvPath: str,
+    pszProductTsvPath: str,
+) -> str:
+    """仕入先名3列・商品名2列を追加したstep0002 TSVを作成します。"""
+    return _create_supplier_step0002_tsv(
+        pszPriceTsvPath, pszSupplierTsvPath, pszProductTsvPath, False
+    )
+
+
+def create_supplier_step0002_name_inserted_tsv(
+    pszPriceTsvPath: str,
+    pszSupplierTsvPath: str,
+    pszProductTsvPath: str,
+) -> str:
+    """仕入先名1列・商品名1列を追加した名挿入step0002 TSVを作成します。"""
+    return _create_supplier_step0002_tsv(
+        pszPriceTsvPath, pszSupplierTsvPath, pszProductTsvPath, True
+    )
+
+
 def create_inventory_step0002_tsv(
     pszInventoryTsvPath: str, pszProductTsvPath: str
 ) -> str:
@@ -452,6 +584,49 @@ def create_step0002_tsv_if_ready(
     return pszStep0002Path, pszStep0002NameInsertedPath, pszExcelPath, []
 
 
+def find_step0001_supplier_master_paths(
+    pszStep0001Path: str,
+) -> Optional[Tuple[str, str, str]]:
+    pszDirectory, pszFileName = os.path.split(os.path.abspath(pszStep0001Path))
+    for pszPrefix in (
+        SUPPLIER_PRICE_MASTER_STEP0001_PREFIX,
+        SUPPLIER_MASTER_STEP0001_PREFIX,
+        PRODUCT_MASTER_STEP0001_PREFIX,
+    ):
+        if pszFileName.startswith(pszPrefix):
+            pszSuffix = pszFileName[len(pszPrefix) :]
+            if not pszSuffix.lower().endswith(".tsv"):
+                return None
+            return (
+                os.path.join(pszDirectory, SUPPLIER_PRICE_MASTER_STEP0001_PREFIX + pszSuffix),
+                os.path.join(pszDirectory, SUPPLIER_MASTER_STEP0001_PREFIX + pszSuffix),
+                os.path.join(pszDirectory, PRODUCT_MASTER_STEP0001_PREFIX + pszSuffix),
+            )
+    return None
+
+
+def create_supplier_step0002_tsv_if_ready(
+    pszStep0001Path: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str], List[str]]:
+    arrMasterPaths = find_step0001_supplier_master_paths(pszStep0001Path)
+    if arrMasterPaths is None:
+        return None, None, None, []
+    pszPriceTsvPath, pszSupplierTsvPath, pszProductTsvPath = arrMasterPaths
+    arrMissingPaths = [pszPath for pszPath in arrMasterPaths if not os.path.isfile(pszPath)]
+    if arrMissingPaths:
+        return None, None, None, arrMissingPaths
+    pszStep0002Path = create_supplier_step0002_tsv(
+        pszPriceTsvPath, pszSupplierTsvPath, pszProductTsvPath
+    )
+    pszStep0002NameInsertedPath = create_supplier_step0002_name_inserted_tsv(
+        pszPriceTsvPath, pszSupplierTsvPath, pszProductTsvPath
+    )
+    pszExcelPath = create_step0002_excel_file(
+        pszStep0002Path, pszStep0002NameInsertedPath, True
+    )
+    return pszStep0002Path, pszStep0002NameInsertedPath, pszExcelPath, []
+
+
 def find_step0001_inventory_master_paths(
     pszStep0001Path: str,
 ) -> Optional[Tuple[str, str]]:
@@ -497,7 +672,8 @@ def create_inventory_step0002_tsv_if_ready(
 
 
 def create_step0002_excel_file(
-    pszStep0002Path: str, pszStep0002NameInsertedPath: str
+    pszStep0002Path: str, pszStep0002NameInsertedPath: str,
+    bSupplierPrice: bool = False,
 ) -> str:
     """2つのstep0002 TSVを指定シート名のExcelブックにまとめます。"""
     pszDirectory, pszFileName = os.path.split(pszStep0002Path)
@@ -507,6 +683,9 @@ def create_step0002_excel_file(
         pszDirectory, os.path.splitext(pszFileName[len("step0002_") :])[0] + ".xlsx"
     )
 
+    arrNumericHeaders = EXCEL_NUMERIC_HEADERS
+    if bSupplierPrice:
+        arrNumericHeaders = arrNumericHeaders | SUPPLIER_EXCEL_NUMERIC_HEADERS
     arrSheetTextRanges: List[str] = []
     try:
         objWorkbook = Workbook()
@@ -538,7 +717,7 @@ def create_step0002_excel_file(
                         )
                         if (
                             iRow > 1
-                            and pszHeader in EXCEL_NUMERIC_HEADERS
+                            and pszHeader in arrNumericHeaders
                             and pszValue
                         ):
                             try:
@@ -573,7 +752,7 @@ def create_step0002_excel_file(
                     + get_column_letter(iColumn)
                     + str(iLastRow)
                     for iColumn, pszHeader in enumerate(arrHeaders, start=1)
-                    if pszHeader not in EXCEL_NUMERIC_HEADERS
+                    if pszHeader not in arrNumericHeaders
                 ]
                 arrSheetTextRanges.append(" ".join(arrTextColumnRanges))
             else:
@@ -744,6 +923,7 @@ def draw_instruction_text(iWindowHandle: int) -> None:
             "各step0001 TSVから、同じフォルダーに同名のExcelも作成します。\n\n"
             "得意先別商品売上単価・得意先・商品マスタのstep0001 TSVが揃うと、"
             "通常版と名挿入版のstep0002 TSV、および2シートのExcelファイルも作成します。\n\n"
+            "仕入先別商品単価・仕入先・商品マスタのstep0001 TSVが揃った場合も同様に作成します。\n\n"
             "在庫マスタと商品マスタのstep0001 TSVが揃った場合も同様に作成します。\n\n"
             "複数ファイルをまとめて処理できます。"
         )
@@ -853,6 +1033,52 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                 elif arrMissingPaths:
                     arrStep0002Lines.append(
                         "step0002未作成（必要なstep0001ファイルが不足）:\n  "
+                        + "\n  ".join(os.path.basename(pszPath) for pszPath in arrMissingPaths)
+                    )
+
+        arrCheckedSupplierPricePaths = set()
+        for pszStep0001Path in arrProcessedStep0001Paths:
+            arrMasterPaths = find_step0001_supplier_master_paths(pszStep0001Path)
+            if arrMasterPaths is None:
+                continue
+            pszPriceTsvPath = arrMasterPaths[0]
+            if pszPriceTsvPath in arrCheckedSupplierPricePaths:
+                continue
+            arrCheckedSupplierPricePaths.add(pszPriceTsvPath)
+            try:
+                (
+                    pszStep0002Path,
+                    pszStep0002NameInsertedPath,
+                    pszExcelPath,
+                    arrMissingPaths,
+                ) = create_supplier_step0002_tsv_if_ready(
+                    pszStep0001Path
+                )
+            except ConversionError as objException:
+                bStep0002Error = True
+                arrStep0002Lines.append(
+                    "仕入先step0002作成失敗: "
+                    + os.path.basename(pszPriceTsvPath)
+                    + "\n  "
+                    + str(objException)
+                )
+            else:
+                if pszStep0002Path:
+                    arrStep0002Lines.append(
+                        "仕入先step0002作成: " + os.path.basename(pszStep0002Path)
+                    )
+                if pszStep0002NameInsertedPath:
+                    arrStep0002Lines.append(
+                        "仕入先名挿入step0002作成: "
+                        + os.path.basename(pszStep0002NameInsertedPath)
+                    )
+                if pszExcelPath:
+                    arrStep0002Lines.append(
+                        "仕入先Excel作成: " + os.path.basename(pszExcelPath)
+                    )
+                elif arrMissingPaths:
+                    arrStep0002Lines.append(
+                        "仕入先step0002未作成（必要なstep0001ファイルが不足）:\n  "
                         + "\n  ".join(os.path.basename(pszPath) for pszPath in arrMissingPaths)
                     )
 
