@@ -7,6 +7,7 @@ import textwrap
 import tempfile
 import unicodedata
 import zipfile
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree
 from typing import Dict, List, Optional, Tuple
@@ -50,6 +51,81 @@ EXCEL_MAX_COLUMN_WIDTH = 25
 
 class ConversionError(Exception):
     """CSVをTSVへ変換できない場合の例外です。"""
+
+
+def append_error_log(
+    pszInputPath: str,
+    pszStage: str,
+    pszDetail: str,
+    arrLogNotices: List[Tuple[str, str]],
+    arrRelatedPaths: Optional[List[str]] = None,
+    arrMissingPaths: Optional[List[str]] = None,
+) -> None:
+    """エラー・未作成理由を追記し、保存先または保存失敗を通知用に保持します。"""
+    pszInputPath = os.path.abspath(pszInputPath)
+    pszLogPath = os.path.join(os.path.dirname(pszInputPath), "_error.txt")
+    pszCategory = "未作成" if arrMissingPaths else "エラー"
+    arrLines = [
+        "------------------------------------------------------------",
+        "日時: " + datetime.now().astimezone().isoformat(timespec="seconds"),
+        "プログラム: " + os.path.basename(__file__),
+        "区分: " + pszCategory,
+        "処理: " + pszStage,
+        "対象: " + pszInputPath,
+        "詳細: " + pszDetail,
+    ]
+    for pszPath in arrRelatedPaths or []:
+        arrLines.append("関連: " + os.path.abspath(pszPath))
+    for pszPath in arrMissingPaths or []:
+        arrLines.append("不足: " + os.path.abspath(pszPath))
+    pszRecord = "\n".join(arrLines) + "\n\n"
+    pszRecord = pszRecord.replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        with open(pszLogPath, "ab") as objLog:
+            if objLog.tell() == 0:
+                objLog.write(b"\xef\xbb\xbf")
+            objLog.write(pszRecord.replace("\n", "\r\n").encode("utf-8"))
+    except (OSError, UnicodeError) as objException:
+        arrLogNotices.append((
+            "保存失敗",
+            "ログ保存に失敗しました: " + pszLogPath
+            + "\n理由: " + str(objException)
+            + "\n元の記録内容:\n" + pszRecord,
+        ))
+    else:
+        pszNotice = (
+            "未作成理由を保存しました: " if arrMissingPaths
+            else "エラー詳細を保存しました: "
+        ) + pszLogPath
+        objNotice = (pszCategory, pszNotice)
+        if objNotice not in arrLogNotices:
+            arrLogNotices.append(objNotice)
+
+
+def run_with_error_log(
+    objOperation,
+    pszStage: str,
+    pszInputPath: str,
+    arrLogNotices: List[Tuple[str, str]],
+    arrRelatedPaths: Optional[Tuple[str, ...]] = None,
+    bCheckMissing: bool = False,
+):
+    """処理結果と例外を維持したまま、失敗・未作成理由を記録します。"""
+    pszTargetPath = arrRelatedPaths[0] if arrRelatedPaths else pszInputPath
+    try:
+        objResult = objOperation()
+    except ConversionError as objException:
+        append_error_log(
+            pszTargetPath, pszStage, str(objException), arrLogNotices,
+            list(arrRelatedPaths or ()),
+        )
+        raise
+    if bCheckMissing and objResult[3]:
+        append_error_log(
+            pszTargetPath, pszStage, "必要なstep0001ファイルが不足しています。",
+            arrLogNotices, list(arrRelatedPaths or ()), objResult[3],
+        )
+    return objResult
 
 
 def validate_csv_path(pszInputPath: str) -> str:
@@ -957,15 +1033,25 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
             show_message("ドラッグされたファイルがありません。", True)
             return 0
 
+        arrLogNotices: List[Tuple[str, str]] = []
         arrSummaryLines: List[str] = []
         arrProcessedStep0001Paths: List[str] = []
         iSuccessCount = 0
         iFailureCount = 0
         for pszInputPath in arrInputPaths:
             try:
-                pszOutputPath = convert_dropped_csv_to_tsv(pszInputPath)
-                pszStep0001Path = create_step0001_tsv(pszOutputPath)
-                pszStep0001ExcelPath = create_step0001_excel_file(pszStep0001Path)
+                pszOutputPath = run_with_error_log(
+                    lambda: convert_dropped_csv_to_tsv(pszInputPath),
+                    "入力検証・CSV読み込み・TSV作成", pszInputPath, arrLogNotices,
+                )
+                pszStep0001Path = run_with_error_log(
+                    lambda: create_step0001_tsv(pszOutputPath),
+                    "step0001 TSV作成", pszInputPath, arrLogNotices,
+                )
+                pszStep0001ExcelPath = run_with_error_log(
+                    lambda: create_step0001_excel_file(pszStep0001Path),
+                    "step0001 Excel作成", pszInputPath, arrLogNotices,
+                )
                 arrProcessedStep0001Paths.append(pszStep0001Path)
             except ConversionError as objException:
                 iFailureCount += 1
@@ -1005,8 +1091,10 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                     pszStep0002NameInsertedPath,
                     pszExcelPath,
                     arrMissingPaths,
-                ) = create_step0002_tsv_if_ready(
-                    pszStep0001Path
+                ) = run_with_error_log(
+                    lambda: create_step0002_tsv_if_ready(pszStep0001Path),
+                    "得意先step0002・Excel作成", pszStep0001Path, arrLogNotices,
+                    find_step0001_master_paths(pszStep0001Path), True,
                 )
             except ConversionError as objException:
                 bStep0002Error = True
@@ -1051,8 +1139,10 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                     pszStep0002NameInsertedPath,
                     pszExcelPath,
                     arrMissingPaths,
-                ) = create_supplier_step0002_tsv_if_ready(
-                    pszStep0001Path
+                ) = run_with_error_log(
+                    lambda: create_supplier_step0002_tsv_if_ready(pszStep0001Path),
+                    "仕入先step0002・Excel作成", pszStep0001Path, arrLogNotices,
+                    find_step0001_supplier_master_paths(pszStep0001Path), True,
                 )
             except ConversionError as objException:
                 bStep0002Error = True
@@ -1097,7 +1187,11 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                     pszInventoryNameInsertedPath,
                     pszInventoryExcelPath,
                     arrInventoryMissingPaths,
-                ) = create_inventory_step0002_tsv_if_ready(pszStep0001Path)
+                ) = run_with_error_log(
+                    lambda: create_inventory_step0002_tsv_if_ready(pszStep0001Path),
+                    "在庫step0002・Excel作成", pszStep0001Path, arrLogNotices,
+                    find_step0001_inventory_master_paths(pszStep0001Path), True,
+                )
             except ConversionError as objException:
                 bStep0002Error = True
                 arrStep0002Lines.append(
@@ -1142,6 +1236,8 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
         )
         if arrStep0002Lines:
             pszSummary += "\n\n" + "\n\n".join(arrStep0002Lines)
+        if arrLogNotices:
+            pszSummary = "\n\n".join(pszNotice for _, pszNotice in arrLogNotices) + "\n\n" + pszSummary
         show_message(pszSummary, iFailureCount > 0 or bStep0002Error)
         return 0
     if iMessage == win32con.WM_PAINT:
